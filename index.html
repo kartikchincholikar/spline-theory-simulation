@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive NN Layer Visualization</title>
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- lil-gui: A lightweight GUI for tweaking parameters -->
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a2e;
+            color: white;
+            font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .view-controls {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 12px;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .view-controls button {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            border: none;
+            padding: 8px 14px;
+            margin: 4px;
+            border-radius: 20px;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 12px;
+            transition: all 0.3s ease;
+            display: block;
+            width: calc(100% - 8px);
+            box-sizing: border-box;
+        }
+        
+        .view-controls button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .view-controls button.active {
+            background: linear-gradient(45deg, #f093fb, #f5576c);
+            box-shadow: 0 0 20px rgba(240, 147, 251, 0.5);
+            transform: translateY(0);
+        }
+        
+        .info {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            z-index: 90;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 12px;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 250px;
+            font-size: 12px;
+        }
+        
+        .legend { display: flex; align-items: center; margin: 4px 0; }
+        .color-box { width: 14px; height: 14px; margin-right: 8px; border-radius: 3px; }
+
+        /* lil-gui custom styling */
+        .lil-gui {
+            font-size: 12px;
+            --widget-height: 24px;
+            --title-height: 28px;
+        }
+        .lil-gui.root {
+            top: 15px;
+            right: 15px;
+            left: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="view-controls">
+        <button id="original" class="active">1. Original 2D Grid</button>
+        <button id="transformed">2. L1: Affine (W1x + b1)</button>
+        <button id="relu">3. L1: ReLU Activation</button>
+        <button id="layer2Affine">4. L2: Affine (W2x + b2)</button>
+        <button id="sigmoid">5. L2: Sigmoid Output</button>
+    </div>
+    
+    <div class="info">
+        <h3>Visualization Guide</h3>
+        <div class="legend"><div class="color-box" style="background: #ff6b6b;"></div><span>Original 2D points</span></div>
+        <div class="legend"><div class="color-box" style="background: #00ff88;"></div><span>L1 Transformed</span></div>
+        <div class="legend"><div class="color-box" style="background: #45b7d1;"></div><span>L1 After ReLU</span></div>
+        <div class="legend"><div class="color-box" style="background: #ffcc00;"></div><span>L2 Affine Output</span></div>
+        <div class="legend"><div class="color-box" style="background: linear-gradient(to right, #ff0000, #00ff00);"></div><span>L2 Sigmoid (0:Red → 1:Green)</span></div>
+        <p style="margin-top: 10px;"><small>Drag to rotate • Scroll to zoom</small></p>
+    </div>
+    
+    <div id="canvas-container"></div>
+
+    <script>
+        class NNViz {
+            constructor() {
+                this.initScene();
+                this.initParams();
+                this.initGUI();
+                
+                // Data stores for points at each stage
+                this.originalPoints = [];
+                this.transformedPoints = [];
+                this.reluPoints = [];
+                this.layer2AffinePoints = [];
+                this.sigmoidOutputPoints = [];
+                
+                this.currentView = 'original'; // To track active view
+                
+                this.recalculateAll(); // Initial calculation
+                this.setupViewControls();
+                this.animate();
+                
+                // Set initial view
+                this.showOriginal();
+            }
+            
+            initScene() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x1a1a2e, 1.0);
+                document.getElementById('canvas-container').appendChild(this.renderer.domElement);
+                
+                this.camera.position.set(8, 6, 8);
+                this.camera.lookAt(0, 0, 0);
+                
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+                this.scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+                directionalLight.position.set(10, 15, 10);
+                this.scene.add(directionalLight);
+                
+                this.addAxes();
+                this.addOrbitControls();
+                window.addEventListener('resize', () => this.onWindowResize());
+            }
+
+            // Centralized parameter management for GUI binding
+            initParams() {
+                this.params = {
+                    // Layer 1
+                    w1_11: -1.2, w1_12: -0.32,
+                    w1_21: 0.88, w1_22: -0.74,
+                    w1_31: 0.31, w1_32: 1.1,
+                    b1_1: 0.0, b1_2: 0.0, b1_3: 0.0,
+                    // Layer 2
+                    w2_1: -1.3, w2_2: -1.3, w2_3: -1.3,
+                    b2_1: 2.0,
+                    reset: () => {
+                        this.gui.reset(); // lil-gui's built-in reset
+                        this.updateAndRedraw();
+                    }
+                };
+
+                // Internal matrix representations
+                this.W1 = [];
+                this.b1 = [];
+                this.W2 = [];
+                this.b2 = [];
+                this.syncParamsToMatrices();
+            }
+
+            // Create the interactive control panel
+            initGUI() {
+                this.gui = new lil.GUI({ title: 'NN Parameters' });
+                const l1Folder = this.gui.addFolder('Layer 1 (W1: 3x2, b1: 3x1)');
+                const w1Folder = l1Folder.addFolder('Weights W1');
+                w1Folder.add(this.params, 'w1_11', -3, 3).name('w_11').onChange(() => this.updateAndRedraw());
+                w1Folder.add(this.params, 'w1_12', -3, 3).name('w_12').onChange(() => this.updateAndRedraw());
+                w1Folder.add(this.params, 'w1_21', -3, 3).name('w_21').onChange(() => this.updateAndRedraw());
+                w1Folder.add(this.params, 'w1_22', -3, 3).name('w_22').onChange(() => this.updateAndRedraw());
+                w1Folder.add(this.params, 'w1_31', -3, 3).name('w_31').onChange(() => this.updateAndRedraw());
+                w1Folder.add(this.params, 'w1_32', -3, 3).name('w_32').onChange(() => this.updateAndRedraw());
+                const b1Folder = l1Folder.addFolder('Biases b1');
+                b1Folder.add(this.params, 'b1_1', -3, 3).name('b_1').onChange(() => this.updateAndRedraw());
+                b1Folder.add(this.params, 'b1_2', -3, 3).name('b_2').onChange(() => this.updateAndRedraw());
+                b1Folder.add(this.params, 'b1_3', -3, 3).name('b_3').onChange(() => this.updateAndRedraw());
+
+                const l2Folder = this.gui.addFolder('Layer 2 (W2: 1x3, b2: 1x1)');
+                const w2Folder = l2Folder.addFolder('Weights W2');
+                w2Folder.add(this.params, 'w2_1', -3, 3).name('w_1').onChange(() => this.updateAndRedraw());
+                w2Folder.add(this.params, 'w2_2', -3, 3).name('w_2').onChange(() => this.updateAndRedraw());
+                w2Folder.add(this.params, 'w2_3', -3, 3).name('w_3').onChange(() => this.updateAndRedraw());
+                const b2Folder = l2Folder.addFolder('Bias b2');
+                b2Folder.add(this.params, 'b2_1', -3, 3).name('b_1').onChange(() => this.updateAndRedraw());
+                
+                l1Folder.open();
+                l2Folder.open();
+
+                this.gui.add(this.params, 'reset').name('Reset All Parameters');
+            }
+
+            // Syncs the flat param object to the matrix structure used in calculations
+            syncParamsToMatrices() {
+                this.W1 = [
+                    [this.params.w1_11, this.params.w1_12],
+                    [this.params.w1_21, this.params.w1_22],
+                    [this.params.w1_31, this.params.w1_32]
+                ];
+                this.b1 = [this.params.b1_1, this.params.b1_2, this.params.b1_3];
+                this.W2 = [[this.params.w2_1, this.params.w2_2, this.params.w2_3]];
+                this.b2 = [this.params.b2_1];
+            }
+
+            // Main update entry point, called by GUI controls
+            updateAndRedraw() {
+                this.recalculateAll();
+
+                // Redraw whichever view is currently active
+                switch(this.currentView) {
+                    case 'original': this.showOriginal(); break;
+                    case 'transformed': this.showTransformed(); break;
+                    case 'relu': this.showReLU(); break;
+                    case 'layer2Affine': this.showLayer2Affine(); break;
+                    case 'sigmoid': this.showSigmoid(); break;
+                }
+            }
+
+            // Re-calculates the entire transformation pipeline
+            recalculateAll() {
+                this.syncParamsToMatrices();
+
+                this.originalPoints = [];
+                this.transformedPoints = [];
+                this.reluPoints = [];
+                this.layer2AffinePoints = [];
+                this.sigmoidOutputPoints = [];
+                
+                const step = 0.15;
+                const range = 3;
+
+                for (let x = -range; x <= range; x += step) {
+                    for (let y = -range; y <= range; y += step) {
+                        const original = [x, y];
+                        this.originalPoints.push(original);
+                        
+                        // Layer 1: Affine (W1x + b1)
+                        const transformed = [
+                            this.W1[0][0] * x + this.W1[0][1] * y + this.b1[0],
+                            this.W1[1][0] * x + this.W1[1][1] * y + this.b1[1],
+                            this.W1[2][0] * x + this.W1[2][1] * y + this.b1[2]
+                        ];
+                        this.transformedPoints.push(transformed);
+                        
+                        // Layer 1: ReLU
+                        const relu = transformed.map(v => Math.max(0, v));
+                        this.reluPoints.push(relu);
+
+                        // Layer 2: Affine (W2x + b2)
+                        const affineVal = this.W2[0][0] * relu[0] + this.W2[0][1] * relu[1] + this.W2[0][2] * relu[2] + this.b2[0];
+                        this.layer2AffinePoints.push(affineVal);
+
+                        // Layer 2: Sigmoid
+                        const sigmoidVal = 1 / (1 + Math.exp(-affineVal));
+                        this.sigmoidOutputPoints.push(sigmoidVal);
+                    }
+                }
+            }
+
+            clearPoints() {
+                const pointsToRemove = this.scene.children.filter(child => child.userData.isPoint);
+                pointsToRemove.forEach(point => {
+                    if (point.geometry) point.geometry.dispose();
+                    if (point.material) point.material.dispose();
+                    this.scene.remove(point);
+                });
+            }
+            
+            // --- Visualization Functions ---
+            
+            showOriginal() {
+                this.clearPoints();
+                this.originalPoints.forEach((point) => {
+                    const geometry = new THREE.SphereGeometry(0.05);
+                    const material = new THREE.MeshBasicMaterial({ color: 0xff6b6b });
+                    const sphere = new THREE.Mesh(geometry, material);
+                    sphere.position.set(point[0], 0, point[1]); // 2D on XZ plane
+                    sphere.userData.isPoint = true;
+                    this.scene.add(sphere);
+                });
+                this.addGridLines();
+            }
+            
+            showTransformed() {
+                this.clearPoints();
+                this.originalPoints.forEach((point, i) => {
+                    const transformed = this.transformedPoints[i];
+                    
+                    const transGeometry = new THREE.SphereGeometry(0.06);
+                    const transMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+                    const transSphere = new THREE.Mesh(transGeometry, transMaterial);
+                    transSphere.position.set(transformed[0], transformed[1], transformed[2]);
+                    transSphere.userData.isPoint = true;
+                    this.scene.add(transSphere);
+                });
+            }
+            
+            showReLU() {
+                this.clearPoints();
+                this.reluPoints.forEach((relu) => {
+                    const reluGeometry = new THREE.SphereGeometry(0.06);
+                    const reluMaterial = new THREE.MeshBasicMaterial({ color: 0x45b7d1 });
+                    const reluSphere = new THREE.Mesh(reluGeometry, reluMaterial);
+                    reluSphere.position.set(relu[0], relu[1], relu[2]);
+                    reluSphere.userData.isPoint = true;
+                    this.scene.add(reluSphere);
+                });
+            }
+
+            showLayer2Affine() {
+                this.clearPoints();
+                this.originalPoints.forEach((origPoint, i) => {
+                    const affineVal = this.layer2AffinePoints[i];
+                    const affineGeom = new THREE.SphereGeometry(0.06);
+                    const affineMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
+                    const affineSphere = new THREE.Mesh(affineGeom, affineMat);
+                    // Visualize scalar output as Y-value over original XZ grid
+                    affineSphere.position.set(origPoint[0], affineVal, origPoint[1]);
+                    affineSphere.userData.isPoint = true;
+                    this.scene.add(affineSphere);
+                });
+            }
+
+            showSigmoid() {
+                this.clearPoints();
+                this.originalPoints.forEach((origPoint, i) => {
+                    const sigmoidVal = this.sigmoidOutputPoints[i];
+                    const sigmoidGeom = new THREE.SphereGeometry(0.06);
+                    // Color from red (0) to green (1)
+                    const sigmoidColor = new THREE.Color().setHSL(sigmoidVal * (1/3), 0.9, 0.5); 
+                    const sigmoidMat = new THREE.MeshBasicMaterial({ color: sigmoidColor });
+                    const sigmoidSphere = new THREE.Mesh(sigmoidGeom, sigmoidMat);
+                    sigmoidSphere.position.set(origPoint[0], sigmoidVal * 2 - 1, origPoint[1]); // Scale to [-1, 1] range for better viz
+                    sigmoidSphere.userData.isPoint = true;
+                    this.scene.add(sigmoidSphere);
+                });
+            }
+
+            // --- Setup and Boilerplate ---
+
+            setupViewControls() {
+                const buttons = {
+                    'original': this.showOriginal,
+                    'transformed': this.showTransformed,
+                    'relu': this.showReLU,
+                    'layer2Affine': this.showLayer2Affine,
+                    'sigmoid': this.showSigmoid,
+                };
+
+                for (const [id, func] of Object.entries(buttons)) {
+                    document.getElementById(id).addEventListener('click', () => {
+                        this.currentView = id;
+                        func.bind(this)();
+                        this.setActiveButton(id);
+                    });
+                }
+            }
+            
+            setActiveButton(activeId) {
+                document.querySelectorAll('.view-controls button').forEach(btn => btn.classList.remove('active'));
+                document.getElementById(activeId).classList.add('active');
+            }
+            
+            addAxes() {
+                const axesGroup = new THREE.Group();
+                const axisLength = 6;
+                const axisRadius = 0.02;
+                const colors = { x: 0xff4757, y: 0x2ed573, z: 0x1e90ff };
+
+                // X-axis (red)
+                const xAxis = new THREE.Mesh(new THREE.CylinderGeometry(axisRadius, axisRadius, axisLength), new THREE.MeshBasicMaterial({ color: colors.x }));
+                xAxis.rotation.z = Math.PI / 2;
+                axesGroup.add(xAxis);
+                // Y-axis (green)
+                const yAxis = new THREE.Mesh(new THREE.CylinderGeometry(axisRadius, axisRadius, axisLength), new THREE.MeshBasicMaterial({ color: colors.y }));
+                axesGroup.add(yAxis);
+                // Z-axis (blue)
+                const zAxis = new THREE.Mesh(new THREE.CylinderGeometry(axisRadius, axisRadius, axisLength), new THREE.MeshBasicMaterial({ color: colors.z }));
+                zAxis.rotation.x = Math.PI / 2;
+                axesGroup.add(zAxis);
+                this.scene.add(axesGroup);
+            }
+
+            addGridLines() {
+                const gridMaterial = new THREE.LineBasicMaterial({ color: 0x444444 });
+                const range = 3;
+                for (let i = -range; i <= range; i++) {
+                    const vPoints = [new THREE.Vector3(i, 0, -range), new THREE.Vector3(i, 0, range)];
+                    const hPoints = [new THREE.Vector3(-range, 0, i), new THREE.Vector3(range, 0, i)];
+                    const vLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(vPoints), gridMaterial);
+                    const hLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(hPoints), gridMaterial);
+                    vLine.userData.isPoint = true;
+                    hLine.userData.isPoint = true;
+                    this.scene.add(vLine, hLine);
+                }
+            }
+            
+            addOrbitControls() {
+                let isMouseDown = false;
+                let mouseX = 0, mouseY = 0;
+                let targetRotationX = 0.5, targetRotationY = 0.5;
+                let currentRotationX = 0.5, currentRotationY = 0.5;
+                
+                const domEl = this.renderer.domElement;
+                domEl.addEventListener('mousedown', e => { isMouseDown = true; mouseX = e.clientX; mouseY = e.clientY; });
+                domEl.addEventListener('mouseup', () => isMouseDown = false);
+                domEl.addEventListener('mouseleave', () => isMouseDown = false);
+                domEl.addEventListener('mousemove', e => {
+                    if (!isMouseDown) return;
+                    targetRotationY += (e.clientX - mouseX) * 0.005;
+                    targetRotationX += (e.clientY - mouseY) * 0.005;
+                    targetRotationX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, targetRotationX));
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                });
+                
+                domEl.addEventListener('wheel', e => {
+                    e.preventDefault();
+                    this.camera.position.multiplyScalar(e.deltaY > 0 ? 1.1 : 0.9);
+                    this.camera.position.clampLength(4, 50);
+                }, { passive: false });
+                
+                this.updateCameraRotation = () => {
+                    currentRotationX += (targetRotationX - currentRotationX) * 0.1;
+                    currentRotationY += (targetRotationY - currentRotationY) * 0.1;
+                    const radius = this.camera.position.length();
+                    this.camera.position.x = radius * Math.sin(currentRotationY) * Math.cos(currentRotationX);
+                    this.camera.position.y = radius * Math.sin(currentRotationX);
+                    this.camera.position.z = radius * Math.cos(currentRotationY) * Math.cos(currentRotationX);
+                    this.camera.lookAt(0, 0, 0);
+                };
+            }
+            
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                if (this.updateCameraRotation) this.updateCameraRotation();
+                this.renderer.render(this.scene, this.camera);
+            }
+            
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+        }
+        
+        new NNViz();
+    </script>
+</body>
+</html>
